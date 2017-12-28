@@ -1,0 +1,25 @@
+{
+  "name": "trackingbot",
+  "version": "1.0.0",
+  "description": "Bot para rastrear envíos",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JuanB3r/trackingbot.git"
+  },
+  "keywords": [
+    "telegram"
+  ],
+  "author": "Juan David Bermudez Celedon",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/JuanB3r/trackingbot/issues"
+  },
+  "homepage": "https://github.com/JuanB3r/trackingbot#readme",
+  "dependencies": {
+    "dotenv": "^4.0.0"
+  }
+}
