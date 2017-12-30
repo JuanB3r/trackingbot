@@ -14,8 +14,19 @@ const sendMessageOptions = {
     }
 };
 
-const errorTrackingNumber = "Hay un error en el formato del número, verifícalo e intenta nuevamente.";
-const httpError = "Lo siento, hay inconvenientes en los sistemas de comunicación. Por favor, intenta más tarde.";
+const editMessageOptions = {
+    hostname: telegramEndpoint,
+    path: "/bot" + process.env.TOKEN + "/editMessage",
+    method: "POST",
+    headers: {
+        "Content-Type": "application/json",
+        "Accept-Charset": "utf-8"
+    }
+};
+
+const errorTrackingNumberMessage = "Hay un error en el formato del número, verifícalo e intenta nuevamente.";
+const noTrackingNumberMessage = "Por favor, escribe el número de guía con un espacio despues del comando";
+const httpErrorMessage = "Lo siento, hay inconvenientes en los sistemas de comunicación. Por favor, intenta más tarde.";
 
 /**
  * Asigna el webhook para las actualizaciones que envía Telegram
@@ -47,12 +58,12 @@ function setWebhook() {
     req.end();
 }
 
-// Vector que contiene las actualizaciones
+/*// Vector que contiene las actualizaciones
 let updates = [];
 
 /**
  * Obtiene las actualizaciones de telegram
- */
+ *
 function getUpdates() {
     let rawData = "";
     let req = https.request({
@@ -82,7 +93,7 @@ function getUpdates() {
         });
     });
     req.end();
-}
+}*/
 
 /**
  * Ejecuta el comando correspondiente a cada actualización
@@ -114,13 +125,13 @@ function executeCommands(update) {
                 help(update.message.chat.id);
                 break;
         }
-    } else if (update.callbackQuery) {
-
+    } else {
+        parseCallback(update.callback_query);
     }
 }
 
 /**
- * Realiza una petición HTTPS
+ * Petición HTTPS que envía un mensaje
  * @param {String} postData JSON con los datos a enviar
  */
 function sendMessage(postData) {
@@ -138,11 +149,28 @@ function sendMessage(postData) {
 }
 
 /**
+ * Petición HTTPS que actualiza un mensaje
+ * @param {String} postData JSON con los datos a enviar
+ */
+function editMessage(postData) {
+    const req = https.request(editMessageOptions, (res) => {
+        console.log(`STATUS POST TELEGRAM MESSAGE: ${res.statusCode}`);
+        res.setEncoding("utf-8");
+    });
+    req.on("error", error => {
+        console.error("ERROR WHEN ATTEMPTING TO SEND THE MESSAGE: " + error);
+    });
+    req.write(postData, (error) => {
+        if (error) console.error(error);
+    });
+    req.end();
+}
+
+/**
  * Envía el mensaje de inicio del bot
  * @param {number} id identificador del chat/usuario
  */
 function start(id) {
-    console.log("CHAT_ID=" + id);
     const postData = JSON.stringify({
         chat_id: id,
         text: "Hola, usa un comando para ayudarte. Si es primera vez que me hablas, usa el comando /help para obtener consejos",
@@ -153,13 +181,44 @@ function start(id) {
 
 /**
  * Analiza un callbackQuery y obtiene el número de guía y la transportista, y 
- * lo convierte en un objeto
- * @param {string} string texto del callbackQuery}
+ * ejecuta la lógica correspondiente
+ * @param {Object} callbackQuery JSON callbackQuery
  */
-function parseCallback(string) {
-    //TODO: convertir callback
-    let object = {};
-    return object;
+function parseCallback(callbackQuery) {
+    let arr = callbackQuery.data.split("\|");
+    let query = {
+        command: arr[0],
+        trackingNumber: arr[1],
+        slug: arr[2]
+    };
+    switch (query.command) {
+        case "track":
+            aftership.track(query.trackingNumber, query.slug).then(tracking => {
+                console.log("TRACK RESUELTO");
+                sendTrackingInfo(tracking, callbackQuery.from.id);
+            }).catch(error => {
+                if (error.meta) { // Si el número de rastreo no existe
+                    if (error.meta.code === 4004) {
+                        aftership.addTrack(query.trackingNumber, query.slug, "").then(tracking => { // Agrega el número de rastreo sin alias
+                            console.log("ADDTRACK RESUELTO");
+                            sendTrackingInfo(query.trackingNumber, tracking, callbackQuery.from.id);
+                        }).catch(err => {
+                            console.error("ADDTRACK RECHAZADO" + err);
+                            checkRequestError(err, callbackQuery.from.id);
+                        });
+                    }
+                } else { // Si el formato del número es inválido
+                    checkRequestError(error, callbackQuery.from.id);
+                }
+                console.error("TRACK RECHAZADO" + error);
+            });
+            break;
+        /*case "add":
+        break;
+        case "edit":
+        break;*/
+    }
+
 }
 
 /**
@@ -168,84 +227,104 @@ function parseCallback(string) {
  */
 function track(message) {
     let array = message.text.split(" ");
-    let trackingNumber = array[1];
-    aftership.detectCouriers(trackingNumber).then((couriers) => {
-        console.log(couriers);
-        let postData;
-        if (typeof couriers === "undefined" || couriers.length === 0) {
-            postData = JSON.stringify({
-                chat_id: message.chat.id,
-                text: "No se pudo encontrar ninguna transportista para el número que ingresaste. ¿Estás seguro de haberlo escrito bien? Revísalo e intenta nuevamente."
-            });
-        } else if (couriers.length === 1) { // Si solo fue detectado un courier
-            aftership.track(trackingNumber, couriers[0].slug).then(tracking => {
-                sendTrackingInfo(tracking, message.chat.id);
-            }).catch(error => {                
-                if (error.meta.code === 4004) { // Si el número de rastreo no existe
-                    aftership.addTrack(trackingNumber, couriers[0].slug, null).then(tracking => { // Agrega el número de rastreo sin alias
-                        sendTrackingInfo(tracking, message.chat.id);
-                    }).catch(err => {
-                        if (err.meta.code === 4005) { // Si el formato del número es inválido
-                            sendInvalidNumberError(message.chat.id);
-                        } else {
-                            sendHttpError(message.chat.id); // Error con la petición
-                        }
-                    });
-                } else if (error.meta.code === 4005) { // Si el formato del número es inválido
-                    sendInvalidNumberError(message.chat.id);
-                } else {
-                    sendHttpError(message.chat.id); // Error con la petición
-                }
-            });
-        } else { // Múltiples couriers detectados, se crean los botones en matriz 2xn
-            let row = [], buttons = [];
-            couriers.forEach((courier, i) => {
-                row.push({
-                    text: courier.name,
-                    callback_data: "track|" + trackingNumber + "|" + courier.slug
+    if (array.length === 2) {
+        let trackingNumber = array[1];
+        aftership.detectCouriers(trackingNumber).then((couriers) => {
+            console.log("DETECT COURIERS RESUELTO");
+            console.log(couriers);
+            let postData;
+            if (typeof couriers === "undefined" || couriers.length === 0) {
+                postData = JSON.stringify({
+                    chat_id: message.chat.id,
+                    text: "No se pudo encontrar ninguna transportista para el número que ingresaste. ¿Estás seguro de haberlo escrito bien? Revísalo e intenta nuevamente."
                 });
-                if (i % 2 === 0) {
-                    buttons.push(row);
-                    row = [];
-                }
-            });
-            // Mensaje a enviar
-            postData = JSON.stringify({
-                chat_id: message.chat.id,
-                text: "¿A cuál transportista pertenece?",
-                reply_markup: {
-                    inline_keyboard: buttons
-                }
-            });
-            sendMessage(postData);
-        }
-    }).catch(error => {
-        if (error.meta.code === 4005) {
-            sendInvalidNumberError(message.chat.id); // Si el formato del número es inválido
-        } else {
-            sendHttpError(message.chat.id); // Error con la petición
-        }
-    });
+            } else if (couriers.length === 1) { // Si solo fue detectado un courier
+                aftership.track(trackingNumber, couriers[0].slug).then(tracking => {
+                    console.log("TRACK RESUELTO");
+                    sendTrackingInfo(trackingNumber, tracking, message.chat.id);
+                }).catch(error => {
+                    if (error.meta) { // Si el número de rastreo no existe
+                        if (error.meta.code === 4004) {
+                            aftership.addTrack(trackingNumber, couriers[0].slug, "").then(tracking => { // Agrega el número de rastreo sin alias
+                                console.log("ADDTRACK RESUELTO");
+                                sendTrackingInfo(trackingNumber, tracking, message.chat.id);
+                            }).catch(err => {
+                                console.error("ADDTRACK RECHAZADO" + err);
+                                checkRequestError(err, message.chat.id);
+                            });
+                        }
+                    } else { // Si el formato del número es inválido
+                        checkRequestError(error, message.chat.id);
+                    }
+                    console.error("TRACK RECHAZADO" + error);
+                });
+            } else { // Múltiples couriers detectados, se crean los botones en matriz 2xn
+                let row = [], buttons = [];
+                couriers.forEach((courier, i) => {
+                    row.push({
+                        text: courier.name,
+                        callback_data: "track|" + trackingNumber + "|" + courier.slug
+                    });
+                    if (i % 2 === 0) {
+                        buttons.push(row);
+                        row = [];
+                    }
+                });
+                // Mensaje a enviar
+                postData = JSON.stringify({
+                    chat_id: message.chat.id,
+                    text: "¿A cuál transportista pertenece?",
+                    reply_markup: {
+                        inline_keyboard: buttons
+                    }
+                });
+                sendMessage(postData);
+            }
+        }).catch(error => { // Error detect couriers
+            console.error("DETECT COURIERS RECHAZADO" + error);
+            checkRequestError(error, message.chat.id);
+        });
+    } else {
+        sendMessage(JSON.stringify({ // Enviar mensajes de aviso
+            chat_id: message.chat.id,
+            text: noTrackingNumberMessage
+        }));
+    }
 }
 
+// TODO: editar el mensaje y no enviar otro
 /**
  * Envía el mensaje con toda la información de rastreo del envío
+ * @param {number} trackingNumber número de guía
  * @param {Object} tracking JSON con la información del envío
  * @param {number} id identificador del chat
  */
-function sendTrackingInfo(tracking, id) {
-    let checkpoints = "", postData;
-    tracking.checkpoints.forEach(checkpoint => {
-        let date = new Date(checkpoint.checkpoint_time).toUTCString();
-        checkpoints += `\n<b>Fecha</b>: ${date}\n<b>Mensaje</b>: ${checkpoint.message}`;
-        if (checkpoint.location) {
-            checkpoints += "\n<b>Lugar</b>:" + checkpoint.location;
-        }
-    });
+function sendTrackingInfo(trackingNumber, tracking, id) {
+    let checkpoints = "", postData, text;
+    text = `<b>Número</b>: ${trackingNumber}\n<b>Estado</b>: ${checkStatus(tracking.checkpoints[tracking.checkpoints.length - 1].tag)}\n`;
 
+    if (tracking.custom_fields) { // Agrega campos personalizados si existen
+        if (tracking.custom_fields.product_name) {
+            text += `<b>Nombre producto</b>: ${tracking.custom_fields.product_name}\n`;
+        }
+        if (tracking.custom_fields.product_price) {
+            text += `<b>Precio producto</b>: $${tracking.custom_fields.product_price}\n`;
+        }
+    }
+
+    if (tracking.checkpoints.length >= 1) {
+        tracking.checkpoints.forEach(checkpoint => {
+            let date = new Date(checkpoint.checkpoint_time).toUTCString();
+            checkpoints += `\n<b>Fecha</b>: ${date}\n<b>Mensaje</b>: ${checkpoint.message}`;
+            if (checkpoint.location) {
+                checkpoints += "\n<b>Lugar</b>:" + checkpoint.location;
+            }
+        });
+        text += "<b>Checkpoints</b>\n" + checkpoints;
+    }
     postData = JSON.stringify({
         chat_id: id,
-        text: `<b>Número</b>: ${tracking.tracking_number}\n<b>Estado</b>: en tránsito\n\n<b>Checkpoints</b>\n` + checkpoints,
+        text: text,
         parse_mode: "HTML",
         reply_markup: {
             inline_keyboard: [
@@ -266,50 +345,150 @@ function sendTrackingInfo(tracking, id) {
 }
 
 /**
- * Guarda un envío en la base de datos
- * @param {Object} message Objeto del mensaje con el número a rastrear
+ * Analiza la etiqueta de estado del envío y retorna el texto correspondiente
+ * @param {String} tag etiqueta del estado del envío
+ * @returns {String} texto del estado
  */
-function addTrack(message) { }
-
-/**
- * Verifica si se obtiene error con el número de guía y envía el mensaje de error
- * @param {number} id identificador del chat
- */
-function sendInvalidNumberError(id) {
-    sendMessage(JSON.stringify({
-        chat_id: id,
-        text: errorTrackingNumber
-    }));
+function checkStatus(tag) {
+    if (!tag) {
+        return "Pendiente, aún no se tiene información del envío.";
+    } else {
+        switch (tag) {
+            case "InTransit": return "En tránsito.";
+            case "InfoReceived": return "Información recibida.";
+            case "OutForDelivery": return "En tránsito a entregar.";
+            case "Delivered": return "Entregado.";
+            case "AttemptFail": return "Entrega fallida.";
+            case "Exception": return "Retornado al remitente o no entregado.";
+            case "Expired": return "Expirado, ya no se posee actualizaciones desde hace 30 días.";
+            case "Pending": return "Pendiente, aún no se tiene información del envío.";
+        }
+    }
 }
 
 /**
- * Verifica si se obtiene error con las peticiones HTTP y envía el mensaje de error
+ * Guarda un envío en la base de datos
+ * @param {Object} message Objeto del mensaje con el número a rastrear
+ */
+function addTrack(message) {
+    let array = message.text.split(" ");
+    if (array.length === 2) {
+        let trackingNumber = array[1];
+        aftership.detectCouriers(trackingNumber).then((couriers) => {
+            console.log("DETECT COURIERS RESUELTO");
+            console.log(couriers);
+            let postData;
+            if (typeof couriers === "undefined" || couriers.length === 0) {
+                postData = JSON.stringify({
+                    chat_id: message.chat.id,
+                    text: "No se pudo encontrar ninguna transportista para el número que ingresaste. ¿Estás seguro de haberlo escrito bien? Revísalo e intenta nuevamente."
+                });
+            } else if (couriers.length === 1) { // Si solo fue detectado un courier
+                aftership.track(trackingNumber, couriers[0].slug).then(tracking => {
+                    console.log("TRACK RESUELTO");
+                    sendTrackingInfo(tracking, message.chat.id);
+                }).catch(error => {
+                    if (error.meta.code === 4004) { // Si el número de rastreo no existe
+                        aftership.addTrack(trackingNumber, couriers[0].slug, "").then(tracking => { // Agrega el número de rastreo sin alias
+                            console.log("ADDTRACK RESUELTO");
+                            sendTrackingInfo(tracking, message.chat.id);
+                        }).catch(err => {
+                            console.error("ADDTRACK RECHAZADO" + err);
+                            checkRequestError(err, message.chat.id);
+                        });
+                    } else { // Si el formato del número es inválido
+                        checkRequestError(error, message.chat.id);
+                    }
+                    console.error("TRACK RECHAZADO" + error);
+                });
+            } else { // Múltiples couriers detectados, se crean los botones en matriz 2xn
+                let row = [], buttons = [];
+                couriers.forEach((courier, i) => {
+                    row.push({
+                        text: courier.name,
+                        callback_data: "track|" + trackingNumber + "|" + courier.slug
+                    });
+                    if (i % 2 === 0) {
+                        buttons.push(row);
+                        row = [];
+                    }
+                });
+                // Mensaje a enviar
+                postData = JSON.stringify({
+                    chat_id: message.chat.id,
+                    text: "¿A cuál transportista pertenece?",
+                    reply_markup: {
+                        inline_keyboard: buttons
+                    }
+                });
+                sendMessage(postData);
+            }
+        }).catch(error => { // Error detect couriers
+            console.error("DETECT COURIERS RECHAZADO" + error);
+            checkRequestError(error, message.chat.id);
+        });
+    } else {
+        sendMessage(JSON.stringify({ // Enviar mensajes de aviso
+            chat_id: message.chat.id,
+            text: noTrackingNumberMessage
+        }));
+    }
+}
+
+/**
+ * Verifica si se obtiene error con el formato del número de guía o
+ * un error con la petición HTTP, y luego envía el mensaje de error
+ * @param {Object} err respuesta JSON de la petición o objeto Error
  * @param {number} id identificador del chat
  */
-function sendHttpError(id) {
-    sendMessage(JSON.stringify({
-        chat_id: id,
-        text: httpError
-    }));
+function checkRequestError(err, id) {
+    if (err.meta) {
+        if (err.meta.code === 4005) {// Si el formato del número es inválido
+            sendMessage(JSON.stringify({
+                chat_id: id,
+                text: errorTrackingNumberMessage
+            }));
+        }
+    } else {
+        sendMessage(JSON.stringify({
+            chat_id: id,
+            text: httpErrorMessage
+        })); // Error con la petición HTTP
+    }
 }
 
 /**
  * Edita el alias de un envío almacenado
  * @param {Object} message Objeto del mensaje con el número de guía
  */
-function editTrack(message) { }
+function editTrack(message) {
+    sendMessage(JSON.stringify({
+        chat_id: message.chat.id,
+        text: "Aún no poseo esta funcionalidad, pero pronto la tendré :nerd:"
+    }));
+}
 
 /**
  * Elimina un envío almacenado
  * @param {Object} message Objeto del mensaje con el número de guía
  */
-function removeTrack(message) { }
+function removeTrack(message) {
+    sendMessage(JSON.stringify({
+        chat_id: message.chat.id,
+        text: "Aún no poseo esta funcionalidad, pero pronto la tendré :nerd:"
+    }));
+}
 
 /**
  * Envía todos los envíos almacenados
  * @param {number} id identificador del chat/usuario
  */
-function listTracks(id) { }
+function listTracks(message) {
+    sendMessage(JSON.stringify({
+        chat_id: message.chat.id,
+        text: "Aún no poseo esta funcionalidad, pero pronto la tendré."
+    }));
+}
 
 /**
  * Envía los consejos de uso del bot
@@ -330,6 +509,6 @@ function help(id) {
     sendMessage(postData);
 }
 
-module.exports.getUpdates = getUpdates;
+//module.exports.getUpdates = getUpdates;
 module.exports.setWebhook = setWebhook;
 module.exports.executeCommands = executeCommands;
